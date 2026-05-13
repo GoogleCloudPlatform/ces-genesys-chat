@@ -1,0 +1,33 @@
+#!/bin/bash
+
+# Copyright 2026 Google LLC
+
+# Google Cloud Project ID
+PROJECT_ID="your-google-cloud-project-id"
+
+# Cloud Run Service Name
+SERVICE_NAME="genesys-chat-adapter"
+
+# Cloud Run Service Account
+SERVICE_ACCOUNT="your-service-account@${PROJECT_ID}.iam.gserviceaccount.com"
+
+# Regions to deploy to
+REGIONS=("us-central1" "europe-west1")
+
+# Resources
+CPU="1"
+MEMORY="512Mi"
+
+# Genesys API Key Secret (GSM path or literal value)
+# e.g., "projects/your-project-id/secrets/genesys-api-key/versions/latest"
+# or "your-actual-api-key"
+GENESYS_API_KEY_SECRET="projects/your-project-id/secrets/genesys-api-key/versions/latest"
+
+# Firestore Collection for session tracking
+FIRESTORE_SESSIONS_COLLECTION="genesys-chat-sessions"
+
+# Debug mode (true/false)
+DEBUG="false"
+
+# Ngrok domain for local testing (optional)
+NGROK_DOMAIN="your-ngrok-domain.ngrok-free.app"

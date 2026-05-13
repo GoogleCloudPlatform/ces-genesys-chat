@@ -1,0 +1,18 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# values file
+script/values.sh
+script/values-renibot.sh
+script/deploy-renibot.sh
+
+# Test cases
+tmp/
