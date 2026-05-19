@@ -29,6 +29,7 @@ The Genesys Chat Adapter for CXAS is a Python 3.13+ application built on top of 
 4. **Stateful Turn Tracking**: Mappings of session IDs to deployment IDs and turn counts are stored persistently:
    * By default, these are kept in-memory for testing purposes via a TTLCache.
    * For production, set `FIRESTORE_SESSIONS_COLLECTION` to store session documents in Firestore. Old session documents are automatically cleaned up using Firestore's TTL policy based on the `expiry_time` field (set to 24h into the future).
+5. **Session TTL Override**: You can dynamically override the default 30-minute Google session lifetime by passing the `_session_ttl` parameter in the Genesys request (validated between 1 and 86400 seconds).
 
 ### Loop Prevention (Intent Rotation)
 
@@ -106,27 +107,45 @@ curl -X PUT 'https://api.usw2.pure.cloud/api/v2/integrations/botconnector/YOUR_B
    uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
    ```
 
-### Request Structure Constraints
+### System Parameters / Input Variables
 
-To function properly, your Genesys Bot Connector must include a `_deployment_id` as a custom parameter. This dictates where the traffic runs.
+The adapter reserves specific parameter keys starting with an underscore (`_`) to control runtime configurations dynamically from your Genesys Architect Flow.
 
-**Format Pattern**:
-`projects/{project}/locations/{location}/apps/{app_id}/deployments/{deployment_id}`
+#### 1. Bot Deployment Routing (`_deployment_id` or `__deployment_id`)
+Required to dictate which Google CX Agent Studio deployment this session routes to.
+* **Format**: `projects/{project}/locations/{location}/apps/{app_id}/deployments/{deployment_id}`
 
-**Sample Genesys Payload Definition**:
+#### 2. Session Time-to-Live Override (`_session_ttl`)
+Optional. Overrides Google's default 30-minute session lifetime. It accepts a string representation of the seconds to keep the session active since the last interaction.
+* **Bounds**: Min `1` second, Max `86400` seconds (24 hours).
+* **Example**: `"3600"` (1 hour).
+
+**Sample Genesys request variables payload**:
 ```json
 {
-    "botSessionId": "c86e246...",
+    "botId": "ces-genesys-chat-agent",
+    "botVersion": "1.0",
     "inputMessage": {
-        "text": "help me with my invoice",
-        "type": "Text"
+        "type": "Text",
+        "text": "hi"
     },
-    ...
+    "languageCode": "en-us",
+    "genesysConversationId": "a5bf086a-b019-4d50-a5dd-8b394720b71f",
     "parameters": {
-        "_deployment_id": "projects/my-project/locations/us/apps/123/deployments/456"
+        "_deployment_id": "projects/my-project/locations/us/apps/123/deployments/456",
+        "_session_ttl": "3600"
     }
 }
 ```
+
+### Session End & Escalation Parameters
+
+When a session is completed (`botState` becomes `COMPLETE`) or escalated to a human agent (`intent` becomes `live-agent-handoff`), any custom parameters or metadata returned by the Google CXAS agent (such as target queues or handoff reasons) are formatted and returned in the `parameters` field of the JSON response.
+
+#### Strict String Coercion
+The Genesys Cloud Bot Connector v1 integration strictly enforces a **flat string-to-string JSON map** for `"parameters"`. To comply with this constraint and prevent Genesys from dropping the response:
+* The adapter **unconditionally coerces all output parameter keys and values to string types** (e.g., converting a numeric `priority: 10` to `"priority": "10"`) before returning them to Genesys.
+* Ensure your Genesys Architect flow receives these variables as strings and parses/converts them locally inside the flow if necessary.
 
 ### Deployment (Cloud Run)
 
@@ -145,3 +164,199 @@ The script will automatically allocate memory, set concurrency values, attach th
 
 *   **Production (Default)**: Logs are kept clean at the `INFO` level. Structural validation errors (`422 Unprocessable Content`) are inherently logged to identify schema drift between Genesys and the Adapter.
 *   **Debug Mode**: Set the environment variable `DEBUG="true"` to force the application to dump the full raw JSON input from Genesys and the full outbound payload to CES for deep functional troubleshooting.
+
+### CX Agent Studio testing payloads
+This section contains example before LLM callbacks which will override `LlmResponse` when the test keyword is detected in the user response. Use as needed for testing the integration, these are not intended for production agent builds.
+
+#### Quick reply
+In the CX Agent Studio console, add **Before LLM** callback to the Root Agent on your testing agent.
+
+Paste this python code as the callback function:
+
+```python
+import json
+import base64
+
+def get_user_text(context: CallbackContext) -> str:
+  return context.user_content.parts[0].text
+
+def get_payload_part(payload_string: str):
+  return Part(inline_data=ces_internal.Blob(data=base64.b64encode
+  (payload_string.encode("utf-8")), mime_type="application/json"))
+
+def before_model_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]:
+  user_text = get_user_text(callback_context)
+  if "quick reply" in user_text.lower():
+    payload = {
+      "genesys": [
+          {
+              "type": "Structured",
+              "text": "Structured Type Payload",
+              "content": [
+                  {
+                      "contentType": "QuickReply",
+                      "quickReply": {
+                          "text": "QuickReply1",
+                          "payload": "quickreply1"
+                      }
+                  },
+                  {
+                      "contentType": "QuickReply",
+                      "quickReply": {
+                          "text": "QuickReply2",
+                          "payload": "quickreply2"
+                      }
+                  }
+              ]
+          }
+      ]
+  }
+    payload_json_string = json.dumps(payload)
+    return LlmResponse(content=Content(parts=[Part(text="[NGA Quick](https://developer.genesys.cloud/commdigital/textbots/botconnector-customer-api-spec) *Reply* _Payload_"), get_payload_part(payload_json_string)], role="model"))
+```
+
+Once the deployment version is updated, you can trigger this payload response with text `"quick reply"`.
+
+#### Content Card
+In the CX Agent Studio console, add **Before LLM** callback to the Root Agent on your testing agent.
+
+Paste this python code as the callback function:
+
+```python
+import json
+import base64
+
+def get_user_text(context: CallbackContext) -> str:
+  return context.user_content.parts[0].text
+
+def get_payload_part(payload_string: str):
+  return Part(inline_data=ces_internal.Blob(data=base64.b64encode
+  (payload_string.encode("utf-8")), mime_type="application/json"))
+
+def before_model_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]:
+  user_text = get_user_text(callback_context)
+  if "content card" in user_text.lower():
+    payload = {
+      "genesys": [
+          {
+              "type": "Structured",
+              "text": "Structured Type Payload",
+              "content": [
+                  {
+                      "contentType": "Card",
+                      "card": {
+                          "title": "Content Card Title",
+                          "description": "Content Card Description",
+                          "image": "https://docs.cloud.google.com/static/customer-engagement-ai/conversational-agents/ps/images/root-sub-agent.png",
+                          "defaultAction": {
+                              "type": "Link",
+                              "url": "http://www.google.com/"
+                          },
+                          "actions": [
+                              {
+                                  "type": "Link",
+                                  "text": "Actions Text",
+                                  "url": "https://docs.cloud.google.com/customer-engagement-ai/conversational-agents/ps"
+                              # }
+                              },
+                              {
+                                  "type": "Postback",
+                                  "text": "Postback Text",
+                                  "payload": "Postback Payload"
+                              }
+                          ]
+                      }
+                  }
+              ]
+          }
+      ]
+  }
+    payload_json_string = json.dumps(payload)
+    return LlmResponse(content=Content(parts=[Part(text="[NGA Content](https://developer.genesys.cloud/commdigital/textbots/botconnector-customer-api-spec) *Card* _Payload_"), get_payload_part(payload_json_string)], role="model"))
+```
+
+Once the deployment version is updated, you can trigger this payload response with text `"content card"`.
+
+#### Carousel
+In the CX Agent Studio console, add **Before LLM** callback to the Root Agent on your testing agent.
+
+Paste this python code as the callback function:
+
+```python
+import json
+import base64
+
+def get_user_text(context: CallbackContext) -> str:
+  return context.user_content.parts[0].text
+
+def get_payload_part(payload_string: str):
+  return Part(inline_data=ces_internal.Blob(data=base64.b64encode
+  (payload_string.encode("utf-8")), mime_type="application/json"))
+
+def before_model_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]:
+  user_text = get_user_text(callback_context)
+  if "carousel" in user_text.lower():
+    payload = {
+      "genesys": [
+          {
+              "type": "Structured",
+              "text": "Structured Type Payload",
+              "content": [
+                  {
+                      "contentType": "Carousel",
+                      "carousel": {
+                          "cards": [
+                              {
+                                  "title": "Carousel Title 1",
+                                  "description": "Carousel Description 1",
+                                  "image": "https://docs.cloud.google.com/static/customer-engagement-ai/conversational-agents/ps/images/root-sub-agent.png",
+                                  "defaultAction": {
+                                      "type": "Link",
+                                      "url": "http://www.google.com/"
+                                  },
+                                  "actions": [
+                                      {
+                                          "type": "Link",
+                                          "text": "Actions Link 1",
+                                          "url": "http://www.google.com/"
+                                      },
+                                      {
+                                          "type": "Postback",
+                                          "text": "Postback Text 1",
+                                          "payload": "postbackPayload1"
+                                      }
+                                  ]
+                              },
+                              {
+                                  "title": "Carousel Title 2",
+                                  "description": "Carousel Description 2",
+                                  "image": "https://docs.cloud.google.com/static/customer-engagement-ai/conversational-agents/ps/images/web-widget-architecture.png",
+                                  "defaultAction": {
+                                      "type": "Link",
+                                      "url": "https://store.google.com/us/"
+                                  },
+                                  "actions": [
+                                      {
+                                          "type": "Link",
+                                          "text": "Actions Link 2",
+                                          "url": "https://store.google.com/us/"
+                                      },
+                                      {
+                                          "type": "Postback",
+                                          "text": "Postback Text 2",
+                                          "payload": "postbackPayload2"
+                                      }
+                                  ]
+                              }
+                          ]
+                      }
+                  }
+              ]
+          }
+      ]
+  }
+    payload_json_string = json.dumps(payload)
+    return LlmResponse(content=Content(parts=[Part(text="[NGA](https://developer.genesys.cloud/commdigital/textbots/botconnector-customer-api-spec) *Carousel* _Payload_"), get_payload_part(payload_json_string)], role="model"))
+```
+
+Once the deployment version is updated, you can trigger this payload response with text `"carousel"`.

@@ -74,7 +74,7 @@ class ContentItem(BaseModel):
 
 class InputMessage(BaseModel):
     type: str = Field(..., description="The type of the utterance being sent, e.g., 'Text', 'Structured'")
-    text: str = Field(..., description="The text of the message being sent to the bot.")
+    text: Optional[str] = Field(None, description="The text of the message being sent to the bot.")
     content: Optional[List[ContentItem]] = Field(default_factory=list, description="For rich data content.")
 
 class ChatRequest(BaseModel):
@@ -120,8 +120,21 @@ async def handle_chat(
         raise HTTPException(status_code=403, detail="Forbidden: Invalid or missing API Key")
 
     deployment_id = None
+    session_ttl_duration = None
     if request.parameters:
         deployment_id = request.parameters.get("__deployment_id") or request.parameters.get("_deployment_id")
+        if "_session_ttl" in request.parameters:
+            raw_ttl = request.parameters.get("_session_ttl")
+            try:
+                if isinstance(raw_ttl, str):
+                    raw_ttl = raw_ttl.strip()
+                ttl_seconds = int(raw_ttl)
+                if 1 <= ttl_seconds <= 86400:
+                    session_ttl_duration = f"{ttl_seconds}s"
+                else:
+                    logger.warning(f"Invalid _session_ttl value (must be between 1 and 86400): {raw_ttl}", extra=log_extra)
+            except (ValueError, TypeError):
+                logger.warning(f"Failed to parse _session_ttl as integer: {raw_ttl}", extra=log_extra)
     
     is_new_session = False
     turn_count = 1
@@ -194,6 +207,8 @@ async def handle_chat(
             if not key.startswith("_"):
                 ces_variables[key] = value
 
+
+
     ces_session_id = f"{app_id}/sessions/{request.genesysConversationId}"
     ces_url = f"https://ces.googleapis.com/v1/{ces_session_id}:runSession"
     
@@ -206,11 +221,15 @@ async def handle_chat(
         
     inputs.append({"text": input_text})
 
+    session_config = {
+        "session": ces_session_id,
+        "deployment": deployment_id
+    }
+    if session_ttl_duration:
+        session_config["sessionTtl"] = session_ttl_duration
+
     ces_payload = {
-        "config": {
-            "session": ces_session_id,
-            "deployment": deployment_id
-        },
+        "config": session_config,
         "inputs": inputs
     }
 
@@ -253,6 +272,15 @@ async def handle_chat(
                 "text": output["text"]
             })
             
+        if "payload" in output:
+            custom_payload = output["payload"]
+            if isinstance(custom_payload, dict) and "genesys" in custom_payload:
+                genesys_messages = custom_payload["genesys"]
+                if isinstance(genesys_messages, list):
+                    for msg in genesys_messages:
+                        reply_messages.append(msg)
+                        logger.info("Added rich content message to reply.", extra=log_extra)
+            
         if "endSession" in output:
             bot_state = "COMPLETE"
             logger.info("Session completed by CES.", extra=log_extra)
@@ -267,17 +295,17 @@ async def handle_chat(
             end_session_metadata = output["endSession"].get("metadata", {})
             session_escalated = end_session_metadata.get("session_escalated", False)
 
+            params = end_session_metadata.get("params", {})
             if session_escalated:
                 intent = "live-agent-handoff"
-                params = end_session_metadata.get("params", {})
                 if "reason" in params:
-                    genesys_parameters["escalationReason"] = params["reason"]
-                
-                for k, v in params.items():
-                    if k != "reason" and not k.startswith("VBg_msg_"):
-                        genesys_parameters[k] = v
+                    genesys_parameters["escalationReason"] = str(params["reason"])
             else:
                 intent = "end-session"
+
+            for k, v in params.items():
+                if k != "reason" and not k.startswith("VBg_msg_"):
+                    genesys_parameters[k] = str(v)
 
     if not reply_messages and bot_state != "COMPLETE":
          reply_messages.append({
@@ -300,7 +328,7 @@ async def handle_chat(
     }
 
     if genesys_parameters:
-        response["parameters"] = genesys_parameters
+        response["parameters"] = {str(k): str(v) for k, v in genesys_parameters.items()}
 
     if config.DEBUG_MODE:
         logger.info("--- Outgoing Response to Genesys ---", extra=log_extra)
