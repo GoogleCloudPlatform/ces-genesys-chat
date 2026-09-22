@@ -24,10 +24,27 @@ MEMORY="512Mi"
 GENESYS_API_KEY_SECRET="projects/your-project-id/secrets/genesys-api-key/versions/latest"
 
 # Firestore Collection for session tracking
+# Strongly recommended: without it, session state is per-instance only and
+# breaks as soon as Cloud Run scales beyond one container.
 FIRESTORE_SESSIONS_COLLECTION="genesys-chat-sessions"
 
 # Debug mode (true/false)
+# Logs full request bodies (including customer utterances) and, unless
+# CES_EXCLUDE_DIAGNOSTIC_INFO is set explicitly, stops suppressing CES
+# diagnosticInfo. Leave false in production.
 DEBUG="false"
+
+# Total budget for the CES call, in seconds. Must stay below the Genesys webhook
+# deadline so the adapter can still return a graceful handoff rather than being
+# abandoned mid-request. Genesys does not publish that deadline, so the 7.0
+# default is a conservative guess. CES server-side work dominates this budget
+# (measured p50 up to 4.5s in slower deployments), so do not lower it without
+# checking your own CES latency.
+CES_TIMEOUT_SECONDS="7.0"
+
+# Ask CES to omit diagnosticInfo (~97% of the response body).
+# Defaults to the inverse of DEBUG.
+CES_EXCLUDE_DIAGNOSTIC_INFO="true"
 
 # Ngrok domain for local testing (optional)
 NGROK_DOMAIN="your-ngrok-domain.ngrok-free.app"

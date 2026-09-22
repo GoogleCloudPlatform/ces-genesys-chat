@@ -29,7 +29,6 @@ The Genesys Chat Adapter for CXAS is a Python 3.13+ application built on top of 
 4. **Stateful Turn Tracking**: Mappings of session IDs to deployment IDs and turn counts are stored persistently:
    * By default, these are kept in-memory for testing purposes via a TTLCache.
    * For production, set `FIRESTORE_SESSIONS_COLLECTION` to store session documents in Firestore. Old session documents are automatically cleaned up using Firestore's TTL policy based on the `expiry_time` field (set to 24h into the future).
-5. **Session TTL Override**: You can dynamically override the default 30-minute Google session lifetime by passing the `_session_ttl` parameter in the Genesys request (validated between 1 and 86400 seconds).
 
 ### Loop Prevention (Intent Rotation)
 
@@ -111,14 +110,9 @@ curl -X PUT 'https://api.usw2.pure.cloud/api/v2/integrations/botconnector/YOUR_B
 
 The adapter reserves specific parameter keys starting with an underscore (`_`) to control runtime configurations dynamically from your Genesys Architect Flow.
 
-#### 1. Bot Deployment Routing (`_deployment_id` or `__deployment_id`)
+#### Bot Deployment Routing (`_deployment_id` or `__deployment_id`)
 Required to dictate which Google CX Agent Studio deployment this session routes to.
 * **Format**: `projects/{project}/locations/{location}/apps/{app_id}/deployments/{deployment_id}`
-
-#### 2. Session Time-to-Live Override (`_session_ttl`)
-Optional. Overrides Google's default 30-minute session lifetime. It accepts a string representation of the seconds to keep the session active since the last interaction.
-* **Bounds**: Min `1` second, Max `86400` seconds (24 hours).
-* **Example**: `"3600"` (1 hour).
 
 **Sample Genesys request variables payload**:
 ```json
@@ -132,8 +126,7 @@ Optional. Overrides Google's default 30-minute session lifetime. It accepts a st
     "languageCode": "en-us",
     "genesysConversationId": "a5bf086a-b019-4d50-a5dd-8b394720b71f",
     "parameters": {
-        "_deployment_id": "projects/my-project/locations/us/apps/123/deployments/456",
-        "_session_ttl": "3600"
+        "_deployment_id": "projects/my-project/locations/us/apps/123/deployments/456"
     }
 }
 ```
@@ -162,8 +155,29 @@ The script will automatically allocate memory, set concurrency values, attach th
 
 ### Logging and Monitoring
 
-*   **Production (Default)**: Logs are kept clean at the `INFO` level. Structural validation errors (`422 Unprocessable Content`) are inherently logged to identify schema drift between Genesys and the Adapter.
-*   **Debug Mode**: Set the environment variable `DEBUG="true"` to force the application to dump the full raw JSON input from Genesys and the full outbound payload to CES for deep functional troubleshooting.
+*   **Production (Default)**: Logs are kept clean at the `INFO` level. Structural validation errors (`422 Unprocessable Content`) are logged with the field paths that failed, to identify schema drift between Genesys and the Adapter.
+*   **Debug Mode**: Set the environment variable `DEBUG="true"` to dump the full JSON input from Genesys and the full outbound payload to CES for deep functional troubleshooting.
+*   **Credential and PII redaction**: Request headers are filtered against an allowlist before logging, so the Genesys `api-key` shared secret is never written to Cloud Logging at any log level. Validation errors are logged and returned without the offending request body or field values.
+*   **Structured CES responses**: In debug mode the CES response is emitted as structured `jsonPayload` fields (one log entry per `SessionOutput`, with `diagnosticInfo` split into its own entry and base64 audio elided) rather than as one interpolated string. This keeps entries below the Cloud Logging 256 KB cap and makes them queryable, e.g. `jsonPayload.ces_output.turnIndex = 2`.
+*   **Trace correlation**: Every log line carries `logging.googleapis.com/trace` (derived from the inbound `X-Cloud-Trace-Context`) and `genesysCorrelationId` (from `inin-correlation-id`), so all lines for a turn group together in the Logs Explorer and can be cross-referenced against Genesys-side records.
+*   **Error alerting**: When the adapter degrades gracefully instead of failing the conversation, it logs at `ERROR` with the structured field `adapter_error: true` and a full `stack_trace`. Create a log-based metric and alert on `jsonPayload.adapter_error = true` so these stay visible to operators even though customers only see a handoff.
+*   **Intent rotation health**: Turn numbering for intent rotation prefers the `turnIndex` returned by CES, then the shared Firestore counter, and only then a per-instance in-memory counter. That last tier can drift if a conversation moves between Cloud Run instances after a scale-up, so whenever it is used the adapter logs a `WARNING` carrying `rotation_degraded: true`. Alert on `jsonPayload.rotation_degraded = true`; without it, the drift surfaces only as an intermittent `NoMatchError` in the Architect flow, which is very hard to attribute.
+
+#### Environment variables
+
+| Variable | Default | Description |
+|:---|:---|:---|
+| `API_KEY` | *(required)* | Shared secret expected in the Genesys `api-key` (or `x-api-key`) header. Accepts a **comma-separated list** so a new key can be accepted alongside the old one during rotation. Each entry may be a literal value or a Secret Manager resource name (`projects/.../versions/latest`). |
+| `DEBUG` | `false` | Enables verbose payload logging. |
+| `FIRESTORE_SESSIONS_COLLECTION` | *(unset)* | Firestore collection for cross-instance session state. Strongly recommended in production. |
+| `CES_EXCLUDE_DIAGNOSTIC_INFO` | `true` when `DEBUG=false` | Asks CES to omit `diagnosticInfo`, which accounts for ~97% of the response body and is not consumed by the adapter. |
+| `CES_TIMEOUT_SECONDS` | `7.0` | Total wall-clock budget for the CES call, including the strip-and-retry attempt. Must stay **below** the Genesys Bot Connector webhook timeout (8–10s) so the adapter can still return its graceful handoff; if CES is allowed to outlast Genesys, Genesys takes its Failure branch and the conversation ends. Accepts `0.5`–`30.0`; invalid values are logged and ignored. |
+
+> [!IMPORTANT]
+> `CES_TIMEOUT_SECONDS` is a **total** budget, not per attempt. When the adapter has to retry after CES rejects an optional config field, the retry is given only the time remaining, and is skipped entirely if under 1s is left. This keeps the worst case bounded at the configured value rather than double it.
+
+> [!NOTE]
+> **Sizing the budget.** The number that matters is CES's own inference time, which the adapter cannot influence. In a production capture of a slower deployment, the median round trip was 4.53s, of which **4.46s was CES server-side work** (its self-reported `rootSpan.duration`) and only ~0.07s was network plus adapter. A faster deployment in the same code base measured a CES p99 of 2.26s. Because the ceiling is Genesys's webhook timeout rather than anything local, the default is sized for the slower case: shrinking the budget does not make CES faster, it just converts slow turns into handoffs.
 
 ### CX Agent Studio testing payloads
 This section contains example before LLM callbacks which will override `LlmResponse` when the test keyword is detected in the user response. Use as needed for testing the integration, these are not intended for production agent builds.

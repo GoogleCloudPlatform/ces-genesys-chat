@@ -2,12 +2,12 @@
 
 This document explains how to run the linters to check and format the code in this repository. Following these steps helps maintain a consistent and high-quality codebase.
 
+Python files are linted and formatted with [**Ruff**](https://docs.astral.sh/ruff/), which replaces the previous Black + isort + flake8 toolchain with a single binary and a single configuration block in `pyproject.toml` (`[tool.ruff]`). We use `uv` to manage the development environment.
+
 ---
 ## Manual Linting
 
 You can run the linters manually at any time to check your work.
-
-Python files are linted using Black, isort, and flake8. We use `uv` to manage the development environment.
 
 **1. Install `uv`**
 
@@ -20,25 +20,26 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 From the root of the repository, run this command to install the linting tools in a virtual environment. You only need to do this once.
 ```bash
-uv pip install -e .[dev]
+uv pip install -e ".[dev]"
 ```
 
 **3. Run the Linters**
 
 Run these commands from the root directory to format and check the Python code. They use `uv run` to ensure the correct tools from the virtual environment are always used, so you don't need to activate it manually.
 
-* **To format code with Black:**
+* **To format code:**
     ```bash
-    uv run black .
+    uv run ruff format .
     ```
-* **To sort imports with isort:**
+* **To check for errors and unsorted imports:**
     ```bash
-    uv run isort .
+    uv run ruff check .
     ```
-* **To check for errors with flake8:**
+* **To apply every safe automatic fix (including import sorting):**
     ```bash
-    flake8 --config=./.flake8 .
+    uv run ruff check --fix .
     ```
+
 ---
 ## Automatic Linting on Commit (Optional Setup)
 
