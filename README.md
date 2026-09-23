@@ -28,7 +28,8 @@ The Genesys Chat Adapter for CXAS is a Python 3.13+ application built on top of 
 3. **Session Routing**: The adapter dynamically constructs the CES endpoint by extracting the application identity and location directly from either the `__deployment_id` or `_deployment_id` parameter in the Genesys request payload. **A single adapter can route traffic for multiple distinct bots**.
 4. **Stateful Turn Tracking**: Mappings of session IDs to deployment IDs and turn counts are stored persistently:
    * By default, these are kept in-memory for testing purposes via a TTLCache.
-   * For production, set `FIRESTORE_SESSIONS_COLLECTION` to store session documents in Firestore. Old session documents are automatically cleaned up using Firestore's TTL policy based on the `expiry_time` field (set to 24h into the future).
+   * For production, set `FIRESTORE_SESSIONS_COLLECTION` to store session documents in Firestore, and `FIRESTORE_DATABASE_ID` to name the database holding it. Omitting `FIRESTORE_DATABASE_ID` falls back to the project's `(default)` database.
+   * Each session document carries an `expiry_time` field set 24h into the future. **The adapter writes this field but cannot delete anything — expiry is only enforced if you create a TTL policy on `expiry_time` for the collection.** Without one, session documents accumulate indefinitely. See [Firestore TTL policies](https://docs.cloud.google.com/firestore/native/docs/ttl) to configure it, and [Firestore best practices](https://docs.cloud.google.com/firestore/native/docs/best-practices) for sizing and key-distribution guidance.
 
 ### Loop Prevention (Intent Rotation)
 
@@ -100,6 +101,7 @@ curl -X PUT 'https://api.usw2.pure.cloud/api/v2/integrations/botconnector/YOUR_B
    export API_KEY="your-secret-local-dev-key"
    export DEBUG="true"
    export FIRESTORE_SESSIONS_COLLECTION="ces_sessions" # Optional: Uses Firestore for scalable session tracking
+   export FIRESTORE_DATABASE_ID="my-database"          # Optional: defaults to the "(default)" database
    ```
 5. **Run the server**:
    ```bash
@@ -170,8 +172,9 @@ The script will automatically allocate memory, set concurrency values, attach th
 | `API_KEY` | *(required)* | Shared secret expected in the Genesys `api-key` (or `x-api-key`) header. Accepts a **comma-separated list** so a new key can be accepted alongside the old one during rotation. Each entry may be a literal value or a Secret Manager resource name (`projects/.../versions/latest`). |
 | `DEBUG` | `false` | Enables verbose payload logging. |
 | `FIRESTORE_SESSIONS_COLLECTION` | *(unset)* | Firestore collection for cross-instance session state. Strongly recommended in production. |
+| `FIRESTORE_DATABASE_ID` | *(unset → `(default)`)* | Named Firestore database holding that collection. **Recommended in production** — set it alongside `FIRESTORE_SESSIONS_COLLECTION` rather than relying on the project's `(default)` database. Ignored unless `FIRESTORE_SESSIONS_COLLECTION` is also set. |
 | `CES_EXCLUDE_DIAGNOSTIC_INFO` | `true` when `DEBUG=false` | Asks CES to omit `diagnosticInfo`, which accounts for ~97% of the response body and is not consumed by the adapter. |
-| `CES_TIMEOUT_SECONDS` | `7.0` | Total wall-clock budget for the CES call, including the strip-and-retry attempt. Must stay **below** the Genesys Bot Connector webhook timeout (8–10s) so the adapter can still return its graceful handoff; if CES is allowed to outlast Genesys, Genesys takes its Failure branch and the conversation ends. Accepts `0.5`–`30.0`; invalid values are logged and ignored. |
+| `CES_TIMEOUT_SECONDS` | `7.0` | Total wall-clock budget for the CES call, including the strip-and-retry attempt. Must stay **below** the deadline at which Genesys abandons the webhook and takes its Failure branch, ending the conversation. Genesys does not publish that deadline, so `7.0` is a conservative guess rather than a derived bound. Accepts `0.5`–`30.0`; invalid values are logged and ignored. |
 
 > [!IMPORTANT]
 > `CES_TIMEOUT_SECONDS` is a **total** budget, not per attempt. When the adapter has to retry after CES rejects an optional config field, the retry is given only the time remaining, and is skipped entirely if under 1s is left. This keeps the worst case bounded at the configured value rather than double it.

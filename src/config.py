@@ -53,6 +53,10 @@ def _env_float(name: str, default: float, minimum: float, maximum: float) -> flo
     return value
 
 
+def _env_str(name: str) -> str | None:
+    """Reads an optional string env var; blank or whitespace-only counts as unset."""
+    return (os.environ.get(name) or "").strip() or None
+
 
 def resolve_secret(secret_value: str) -> str:
     """Resolves a 'projects/...' value via Secret Manager, else returns it verbatim.
@@ -95,7 +99,11 @@ DEBUG_MODE = _env_flag("DEBUG", False)
 
 API_KEYS = _resolve_api_keys(os.environ.get("API_KEY"))
 
-FIRESTORE_SESSIONS_COLLECTION = os.environ.get("FIRESTORE_SESSIONS_COLLECTION")
+FIRESTORE_SESSIONS_COLLECTION = _env_str("FIRESTORE_SESSIONS_COLLECTION")
+
+# Named Firestore database holding that collection. Unset means None, which the
+# Firestore client resolves to the project's "(default)" database.
+FIRESTORE_DATABASE_ID = _env_str("FIRESTORE_DATABASE_ID")
 
 # diagnosticInfo is ~97% of the response body and unused by this adapter.
 # Kept in DEBUG so traces stay available for troubleshooting.

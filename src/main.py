@@ -154,11 +154,23 @@ async def _get_access_token() -> str:
 session_cache = TTLCache(maxsize=10000, ttl=3600)
 
 FIRESTORE_SESSIONS_COLLECTION = config.FIRESTORE_SESSIONS_COLLECTION
+FIRESTORE_DATABASE_ID = config.FIRESTORE_DATABASE_ID
 
 if FIRESTORE_SESSIONS_COLLECTION:
-    firestore_db = firestore.AsyncClient(project=project, credentials=credentials)
-    logger.info(f"Using Firestore collection '{FIRESTORE_SESSIONS_COLLECTION}' for session tracking.")
+    # database=None targets the project's "(default)" database.
+    firestore_db = firestore.AsyncClient(
+        project=project, credentials=credentials, database=FIRESTORE_DATABASE_ID
+    )
+    logger.info(
+        f"Using Firestore collection '{FIRESTORE_SESSIONS_COLLECTION}' in database "
+        f"'{FIRESTORE_DATABASE_ID or '(default)'}' for session tracking."
+    )
 else:
+    if FIRESTORE_DATABASE_ID:
+        logger.warning(
+            f"FIRESTORE_DATABASE_ID='{FIRESTORE_DATABASE_ID}' is set but "
+            "FIRESTORE_SESSIONS_COLLECTION is not, so Firestore is disabled entirely."
+        )
     logger.warning("Session-to-deployment-id mapping is happening in-memory. This is only recommended for testing and should not be used in production.")
 
 

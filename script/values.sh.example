@@ -28,6 +28,10 @@ GENESYS_API_KEY_SECRET="projects/your-project-id/secrets/genesys-api-key/version
 # breaks as soon as Cloud Run scales beyond one container.
 FIRESTORE_SESSIONS_COLLECTION="genesys-chat-sessions"
 
+# Named Firestore database holding that collection. Leave unset to use the
+# project's "(default)" database.
+# FIRESTORE_DATABASE_ID="my-database"
+
 # Debug mode (true/false)
 # Logs full request bodies (including customer utterances) and, unless
 # CES_EXCLUDE_DIAGNOSTIC_INFO is set explicitly, stops suppressing CES
