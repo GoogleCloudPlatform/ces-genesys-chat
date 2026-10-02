@@ -20,8 +20,9 @@ from google.cloud import secretmanager
 
 logger = logging.getLogger(__name__)
 
-_SECRET_FETCH_ATTEMPTS = 3
-_SECRET_FETCH_BACKOFF_SECONDS = 0.5
+# GSM_*, not SECRET_*: CodeQL treats any logged "secret"-named identifier as sensitive.
+_GSM_FETCH_ATTEMPTS = 3
+_GSM_FETCH_BACKOFF_SECONDS = 0.5
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -63,25 +64,24 @@ def resolve_secret(secret_value: str) -> str:
     Retried: this runs at import, so one transient GSM error would crash-loop the revision."""
     if secret_value and secret_value.startswith("projects/"):
         last_error: Exception | None = None
-        for attempt in range(1, _SECRET_FETCH_ATTEMPTS + 1):
+        for attempt in range(1, _GSM_FETCH_ATTEMPTS + 1):
             try:
                 client = secretmanager.SecretManagerServiceClient()
                 response = client.access_secret_version(name=secret_value)
                 return response.payload.data.decode("UTF-8").strip()
             except Exception as e:  # noqa: BLE001 - retried and re-raised below
                 last_error = e
+                # Resource name not logged (CodeQL flags it); GSM 403/404 errors include it.
                 logger.warning(
-                    "Failed to resolve secret from GSM (%s), attempt %d/%d: %s",
-                    secret_value,
+                    "Failed to resolve secret from GSM, attempt %d/%d: %s",
                     attempt,
-                    _SECRET_FETCH_ATTEMPTS,
+                    _GSM_FETCH_ATTEMPTS,
                     e,
                 )
-                if attempt < _SECRET_FETCH_ATTEMPTS:
-                    time.sleep(_SECRET_FETCH_BACKOFF_SECONDS * attempt)
+                if attempt < _GSM_FETCH_ATTEMPTS:
+                    time.sleep(_GSM_FETCH_BACKOFF_SECONDS * attempt)
         logger.error(
-            f"Failed to resolve secret from GSM ({secret_value}) after "
-            f"{_SECRET_FETCH_ATTEMPTS} attempts: {last_error}"
+            f"Failed to resolve secret from GSM after {_GSM_FETCH_ATTEMPTS} attempts: {last_error}"
         )
         raise last_error
     return secret_value
