@@ -1,16 +1,42 @@
 [project]
 name = "genesys-chat-adapter-cxas"
 version = "0.1.0"
-description = "Add your description here"
+description = "Genesys Cloud Bot Connector v1 adapter for Google Cloud CX Agent Studio (CES)"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115.0",
-    "google-auth>=2.37.0",
+    # The [requests] extra is required: main.py uses
+    # google.auth.transport.requests, which imports `requests` at module level.
+    "google-auth[requests]>=2.37.0",
     "httpx>=0.28.0",
     "pydantic>=2.10.0",
-    "requests>=2.33.0",
     "uvicorn>=0.34.0",
     "google-cloud-firestore>=2.14.0",
+    "google-cloud-secret-manager>=2.16.0",
+    "google-cloud-logging>=3.9.0",
     "cachetools>=5.3.0",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.8.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+# E/W pycodestyle, F pyflakes, I isort, B bugbear, UP pyupgrade.
+# Together these subsume the black + isort + flake8 trio the project previously
+# documented, in a single tool with a single config block.
+select = ["E", "W", "F", "I", "B", "UP"]
+ignore = [
+    "E501",  # line length is enforced by the formatter, not the linter
+]
+
+[tool.ruff.format]
+quote-style = "double"

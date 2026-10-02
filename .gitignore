@@ -16,3 +16,7 @@ script/deploy-renibot.sh
 
 # Test cases
 tmp/
+docs/
+
+# Local load tests (may contain .env with Genesys credentials)
+.tests/
